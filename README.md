@@ -32,6 +32,6 @@ The LSTM is mathematically standard. It uses forget, candidate, input and output
 
 The FFN takes input of shape (seq_len, batch_size, features). It uses numpy broadcasting to process the data without flattening it, preserving the timestep dimension.
 
-To solve parity I used a dynamic curriculum, where I increase the sequence length when cost falls below 0.2. I chose 0.2 because this is the value the cost played around in training.
+To solve parity I used a dynamic curriculum, where I increase the sequence length when cost falls below 0.2. I chose 0.2 because this is the value the cost plateaued at in preivious training so i assumed this value means confidant and correct.
 
 Starting on small sequence lengths works better because after the network 'loses track' of the parity outputs lose any relation to the labels. This means gradients from beyond the point of first failure become noise. For this reson it is better to begin by training on small sequence lengths and scaling up to keep any failure points close to the end of the sequence, minimiseing the gradients that become noise, making training more efficient. This method allows the network to achieve 100% accuracy on a sequence length of 1000 across 10,000 test examples.
