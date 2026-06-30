@@ -1,7 +1,7 @@
 import numpy as np
 
 
-#take input seq_len,batchsize,inputsize  also take a bitmask of seq_len,batchsize,1 multiply bitmax by output befor backwards pass to make grads work
+#handles (seq_len,batch_size,fetures) throughout
 
 def xavier_initilisation(input_size,output_size):
         bound = np.sqrt(2.0 / (input_size + output_size))
@@ -52,7 +52,7 @@ class LSTM:
 
         #initilise gates
         self.forget_g = gate(I_size,h_size,'sigmoid')
-        self.forget_g.baises += 1 #so that we initilie to remember most to prevent a dying signal
+        self.forget_g.baises += 1 #prevent vanishing graidients in initial training
         self.input_g = gate(I_size,h_size,'sigmoid')
         self.candidate = gate(I_size,h_size,c_act_func)
         self.output_g = gate(I_size,h_size,'sigmoid')
@@ -81,7 +81,7 @@ class LSTM:
         self.candidate.last_input = np.zeros_like(self.forget_g.last_input)
         self.output_g.last_input = np.zeros_like(self.forget_g.last_input)
 
-        #cell state and hiddern state uses seq_len+1 because there is 'bonus' value for each for the input hiddern and cell statesw at the first timesteap
+        #cell state and hiddern state uses seq_len+1 to add a buffer value at timestep 0 for consitant indexing
         self.cell_state = np.zeros(shape=(seq_len+1,batch_size,self.h_size))
         self.hiddern_state = np.zeros_like(self.cell_state)
 
@@ -103,7 +103,7 @@ class LSTM:
         shape = np.shape(dlt_dh)
         seq_len,batch_size = shape[0],shape[1]
 
-        #initilise gates values
+        #initilise arrays to store dl_da for all gates
         self.forget_g.dl_da = np.zeros((seq_len,batch_size,self.h_size))
         self.input_g.dl_da = np.zeros_like(self.forget_g.dl_da)
         self.candidate.dl_da = np.zeros_like(self.forget_g.dl_da)
@@ -111,8 +111,9 @@ class LSTM:
 
         #initilise dl_dh and dl_dcell
         dl_dh = np.zeros_like(dlt_dh)
-        dl_dh = np.concat( (np.zeros((1, batch_size, self.h_size)) , dl_dh), axis = 0)#add a buffer timesteap
-        dl_dh[-1] = dlt_dh[-1]#initilise base case
+        dl_dh = np.concat( (np.zeros((1, batch_size, self.h_size)) , dl_dh), axis = 0)#add a buffer timesteap for t = 0 for consistant indexing
+        
+        dl_dh[-1] = dlt_dh[-1]#initilise base case, at timetep -1 there are no future graidients
         
         dl_dcell = np.zeros_like(dl_dh)#buffer timesteap
         dl_dcell[-1] = dlt_dh[-1] * act_func(self.cell_state[-1],self.o_act_func,True) * self.output_g.a[-1]#initilise base case
@@ -126,7 +127,7 @@ class LSTM:
             self.forget_g.dl_da[t] = dl_dcell[t+1] * self.cell_state[t] 
             self.candidate.dl_da[t] = dl_dcell[t+1] * self.input_g.a[t]
 
-            if t != 0: #avoid unsessasary calulations for dl_dh[0](witch is just a buffer value) only calculate the gate graidents
+            if t != 0: #avoid unsessasary calulations for dl_dh[0](witch is just a buffer value)
                 #find dl_dh through all the different gate paths
                 ouptut_path = self.output_g.backwards(t)
                 input_path = self.input_g.backwards(t)
@@ -134,11 +135,11 @@ class LSTM:
                 candidate_path = self.candidate.backwards(t)
 
             
-                #dl_dh =  direct graidient  +  graidient from future through gates
+                #dl_dh =  direct graidient  +  graidient from future through gates    dlt_dh doesnt have a buffer timestep, so we access dlt_dh[t-1] instead
                 dl_dh[t] = dlt_dh[t-1] + ouptut_path + input_path + forget_path + candidate_path
 
                 #dl_dcell = graidient directly from hiddern state                                                  +  graidient from furute cell state
-                dl_dcell[t] = dl_dh[t] * (act_func(self.cell_state[t],self.o_act_func,True) * self.output_g.a[t-1]) + (dl_dcell[t+1] * self.forget_g.a[t])
+                dl_dcell[t] = dl_dh[t] * act_func(self.cell_state[t],self.o_act_func,True) * self.output_g.a[t-1] + (dl_dcell[t+1] * self.forget_g.a[t])
 
         #update parameters and get dl_dI useing the dl_da values found
         dl_dI_output = self.output_g.update_params(lr,optimiser)
@@ -177,20 +178,20 @@ class gate:
         self.a[t] = act_func(self.z[t],self.act_func,False)
 
 
-    def backwards(self,t):#takes dl_da rentruns dl_dht from the gate
+    def backwards(self,t):#takes dl_da rentruns dl_dh[t] from the gate
         return (self.dl_da[t] * act_func(self.z[t],self.act_func,True)) @ self.wheigts[self.I_size:].T
     
     def update_params(self,lr,optimiser):#
         batch_size = np.shape(self.last_input)[1]
 
-        dl_dI = 'placeholder'#im so lazy, i'll add this when i need it
+        dl_dI = 'placeholder'#will be used if chaining with networks befor the LSTM
         
         dl_dz = self.dl_da * act_func(self.z,self.act_func,True)#get dl_dz
 
         transposed_last_input = self.last_input.transpose(0,2,1)# reshape to (timesteaps,inputs,batch)
         dl_dW = np.sum(transposed_last_input @ dl_dz, axis = 0 )/batch_size #this takes arrays of size (timesteaps,inputs,batch) and (timesteaps,batch,outputs)  numpy brodcasting does batched matrix multiplication to give (timesteaps,inputs,ouputs). sum over 0th axis and divide by batch_size to get grads averaged over batch size and summed over timesteps
         
-        dl_db =np.average( np.sum(dl_dz,axis=(0),keepdims=True),axis = 0)#average over batch, and sum over timesteps
+        dl_db =np.average( np.sum(dl_dz,axis=(0),keepdims=True),axis = 0)#average over batch, and sum over timesteps.
         dl_db = dl_db.reshape(1,np.shape(dl_db)[-1])#reshape to be (1,hiddern)
         #ill put an optimiser here soon :)
         self.wheigts -= dl_dW * lr
